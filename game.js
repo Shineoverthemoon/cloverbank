@@ -12,6 +12,7 @@ const initial = () => ({
   day: 1, gold: 12, sold: 0, x: 4, y: 4, dx: 1, dy: 0, crops: {},
   area: "farm", selected: "turnip", seeds: {turnip: 4, carrot: 1, strawberry: 1, pumpkin: 0},
   chats: {}, supper: false, harvests: {}, quests: {},
+  hens: {}, goods: {},
 });
 const saveKey = "cloverbank-v2";
 let state = initial();
@@ -36,8 +37,18 @@ seedPicker.onchange = () => {
   state.selected = seedPicker.value;
   update();
 };
+const hens = [
+  {name: "Pip", tile: [10,8], feathers: "#fff1d2"},
+  {name: "Clover", tile: [11,8], feathers: "#dba467"},
+];
+const coop = [12,8];
+const goods = {
+  eggs: {label: "Eggs", price: 5},
+  perch: {label: "Perch", price: 6},
+  trout: {label: "Trout", price: 10},
+};
 const trees = {
-  farm: [[1,1],[2,1],[1,8],[3,8],[12,7],[13,1],[0,5],[9,1]],
+  farm: [[1,1],[2,1],[1,8],[3,8],[13,7],[13,1],[0,5],[9,1]],
   town: [[1,1],[6,1],[13,1],[13,7],[1,7],[7,7],[11,7]],
 };
 const buildings = {
@@ -134,6 +145,34 @@ function drawRoom(room) {
     }
   }
 }
+let fishing = null;
+function drawCoop() {
+  box("#b98e52",315,251,100,35);
+  box("#cba66b",315,253,100,3);
+  box("#7e543a",386,260,27,27);
+  box("#b96045",382,251,34,11);
+  box("#e9b777",384,259,30,3);
+  box("#553e35",393,270,12,16);
+  for(const hen of hens) {
+    const [x,y]=hen.tile.map(tile=>tile*32);
+    box("#8f6946",x+6,y+24,22,4);
+    box("#bf7750",x+10,y+22,3,4);box("#bf7750",x+17,y+22,3,4);
+    box(hen.feathers,x+6,y+12,18,11);box(hen.feathers,x+17,y+8,9,11);
+    box("#c65544",x+19,y+5,5,4);box("#ffc46a",x+25,y+13,4,3);
+    box("#4b3631",x+22,y+11,2,2);
+    if(state.hens[hen.name]?.egg) box("#fff1d2",x+4,y+22,6,7);
+  }
+}
+function drawBobber() {
+  const [x,y]=fishing.target.map(tile=>tile*32);
+  box("#a2d4c3",x+7,y+18,18,2);
+  box("#f4e7bd",x+13,y+12,6,4);
+  box("#c65251",x+13,y+16,6,4);
+  if(fishing.bite) {
+    box("#fff1a5",x+15,y+1,3,7);
+    box("#fff1a5",x+15,y+9,3,2);
+  }
+}
 function draw() {
   const farm = state.area === "farm";
   const room = rooms[state.area];
@@ -191,6 +230,8 @@ function draw() {
       } else if (crop.age) box("#7eaa57",px+16,py+8,8,5);
     }
   }
+  if (farm) drawCoop();
+  if (fishing) drawBobber();
   for (const person of villagers.filter(person => person.area===state.area)) {
     sprite(...person.position,person.shirt,person.hair,person.facing,person.stride);
     const quest = commissions[person.name];
@@ -208,6 +249,9 @@ function refreshControls() {
   const progress = state.supper?"Supper ready":`Supper harvest ${Math.min(state.sold,5)}/5`;
   document.querySelector("#stats").textContent = `${area} · Day ${state.day} · ${state.gold}g · ${progress}`;
   document.querySelector("#stock").textContent = `Seeds in bag: ${state.seeds[state.selected]}`;
+  document.querySelector("#goods").textContent = Object.entries(goods)
+    .map(([kind,item])=>`${item.label} ${state.goods[kind] ?? 0}`).join(" · ");
+  document.querySelector("#sell").disabled = !Object.values(state.goods).some(Boolean);
   const journal = document.querySelector("#quests");
   journal.replaceChildren();
   for (const [name, entry] of Object.entries(state.quests)) {
@@ -242,6 +286,7 @@ function blocked(x,y) {
     if (x===7 && y===7) return false;
     return x<4 || x>10 || y<2 || y>6 || room.fixtures.some(tile=>same(tile,x,y));
   }
+  if (state.area==="farm" && (same(coop,x,y) || hens.some(hen=>same(hen.tile,x,y)))) return true;
   const bank = state.area==="farm"?14:0;
   return x<0 || x>14 || y<0 || y>8 || (x===bank && y!==3) ||
     buildings[state.area].some(building=>atBuilding(building,x,y)) ||
@@ -250,6 +295,10 @@ function blocked(x,y) {
 }
 function move(dx,dy) {
   const x=state.x+dx,y=state.y+dy;
+  if(fishing && (!blocked(x,y) || !same(fishing.target,x,y))) {
+    stopFishing();
+    message.textContent="You reeled in your line.";
+  }
   state.dx=dx;state.dy=dy;
   if(y===3 && ((state.area==="farm" && x===15) || (state.area==="town" && x===-1))) {
     state.area=state.area==="farm"?"town":"farm";
@@ -302,6 +351,48 @@ function talk(person) {
   }
   if (!checkCommission(person)) update(`${person.name}: ${person.lines[visits%person.lines.length]}`);
 }
+function stopFishing() {
+  if (!fishing) return;
+  clearTimeout(fishing.timer);
+  fishing = null;
+}
+function fishAt(x,y) {
+  if (fishing?.bite) {
+    const kind = Math.random() < 0.34 ? "trout" : "perch";
+    stopFishing();
+    state.goods[kind] = (state.goods[kind] ?? 0) + 1;
+    return update(`Caught a ${kind}! It's in your basket.`);
+  }
+  if (fishing) return update("Watch the bobber. Reel in when you see a bite.");
+  fishing = {target: [x,y], bite: false};
+  fishing.timer = setTimeout(()=>{
+    fishing.bite = true;
+    fishing.timer = setTimeout(()=>{
+      stopFishing();
+      update("The fish got away. Cast again when you’re ready.");
+    },4500);
+    update("A bite! Press Space or tap Use now to reel it in.");
+  },1700+Math.random()*2300);
+  update("Line cast. Wait for the bite, then press Space or tap Use.");
+}
+function tendHen(hen) {
+  const status = state.hens[hen.name] ??= {fed: false, egg: false};
+  if (status.egg) {
+    status.egg = false;
+    state.goods.eggs = (state.goods.eggs ?? 0) + 1;
+    return update(`Collected an egg from ${hen.name}. Use again to feed her.`);
+  }
+  if (status.fed) return update(`${hen.name} already ate today. Check for an egg after sleeping.`);
+  status.fed = true;
+  update(`Fed ${hen.name} from the coop's grain bin. Check for an egg tomorrow.`);
+}
+function sellBasket() {
+  const total = Object.entries(goods).reduce((sum,[kind,item])=>sum+(state.goods[kind] ?? 0)*item.price,0);
+  if (!total) return;
+  state.gold += total;
+  state.goods = {};
+  update(`Sold your fish and eggs for ${total}g.`);
+}
 function act() {
   const x=state.x+state.dx,y=state.y+state.dy,key=[x,y];
   const person=villagers.find(person=>person.area===state.area && same(person.position,x,y));
@@ -314,6 +405,10 @@ function act() {
   const door = buildings[state.area].find(building=>byDoor(building) && state.dy===-1);
   if(door) return changeArea(door.room,7,7,0,-1,`Inside ${rooms[door.room].name}. Walk south through the door to leave.`);
   if(state.area==="town") return update("Stand below a building's door, face north, and use Open / Talk to enter.");
+  const hen = hens.find(bird=>same(bird.tile,x,y));
+  if (hen) return tendHen(hen);
+  if (same(coop,x,y)) return update("Face Pip or Clover to feed her or collect her egg.");
+  if (x===14 && y!==3 && y>=0 && y<=8) return fishAt(x,y);
   if (!plots.some(plot=>same(plot,x,y))) return update("Face a brown garden plot, talk to Fern, or take the east bridge to Willowford.");
   const crop=state.crops[key];
   if (crop && crop.age>=varieties[crop.kind].days) {
@@ -334,7 +429,12 @@ function act() {
 }
 function sleep() {
   if (state.area!=="farm" && state.area!=="farmhouse") return update("Head back to the farm before turning in.");
+  stopFishing();
   state.day++;
+  for(const status of Object.values(state.hens)) {
+    if (status.fed) status.egg = true;
+    status.fed = false;
+  }
   if(state.area==="farmhouse") {state.x=4;state.y=3;state.dx=0;state.dy=-1;}
   else {state.x=5;state.y=3;state.dx=0;state.dy=1;}
   for(const crop of Object.values(state.crops)) {
@@ -353,6 +453,7 @@ function buySeed() {
 document.querySelector("#act").onclick=act;
 document.querySelector("#sleep").onclick=sleep;
 document.querySelector("#buy").onclick=buySeed;
+document.querySelector("#sell").onclick=sellBasket;
 function walkVillagers() {
   for(const person of villagers) {
     const next=(person.step+1)%person.route.length;
